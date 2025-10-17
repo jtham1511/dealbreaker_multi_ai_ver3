@@ -1917,7 +1917,7 @@
   function renderHistory(){
     aiBody.innerHTML = '';
     const hist = loadHistory();
-    hist.forEach(m => addMsg(escapeHtml(m.content), m.role === 'user'));
+    hist.forEach(m => addMsg(m.content, m.role === 'user'));
     aiBody.scrollTop = aiBody.scrollHeight;
   }
 
@@ -1926,10 +1926,10 @@
   aiFab?.addEventListener('click', openModal);
   document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') closeModal(); });
 
-  function addMsg(html, me=false){
+  function addMsg(content, me=false, isHtml=false){
     const div = document.createElement('div');
     div.className = 'ai-msg' + (me ? ' me' : '');
-    div.innerHTML = html;
+    div.innerHTML = isHtml ? content : formatMessage(content);
     aiBody.appendChild(div);
     aiBody.scrollTop = aiBody.scrollHeight;
     return div;
@@ -1944,11 +1944,11 @@
   async function send(){
     const text = aiInput.value.trim();
     if(!text) return;
-    addMsg(escapeHtml(text), true);
+    addMsg(text, true);
     pushHistory('user', text);
     aiInput.value = '';
 
-    const holder = addMsg('<span class="ai-token">...</span>', false);
+    const holder = addMsg('<span class="ai-token">...</span>', false, true);
 
     const hist = loadHistory().slice(-MAX_TURNS);
     const payload = {
@@ -1988,7 +1988,7 @@
             const json = JSON.parse(data);
             const token = json.delta || json.content || '';
             acc += token;
-            holder.insertAdjacentHTML('beforeend', escapeHtml(token));
+            holder.innerHTML = formatMessage(acc);
             aiBody.scrollTop = aiBody.scrollHeight;
           } catch(e) {}
         }
@@ -2002,6 +2002,13 @@
 
   function escapeHtml(s){
     return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  function formatMessage(text){
+    const escaped = escapeHtml(String(text || '')).replace(/\r\n/g, '\n');
+    const withBold = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    const withCode = withBold.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return withCode.replace(/\n/g, '<br>');
   }
 
   aiSend.addEventListener('click', send);
