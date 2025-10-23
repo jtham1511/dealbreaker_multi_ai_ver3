@@ -5,7 +5,416 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gartner Contract Evaluation Platform</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <!-- UI framework & fonts (CDNs, Play CDN for Tailwind for dev) -->
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+        <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" referrerpolicy="no-referrer" />
+
+        <style>
+            :root{
+                --primary: #1e40af;
+                --secondary: #475569;
+                --success: #059669;
+                --warning: #d97706;
+                --danger: #dc2626;
+                --border: #e6edf3;
+                --background: #f8fafc;
+                --surface: #ffffff;
+                --card: #ffffff;
+                --text-muted: #64748b;
+            }
+            html,body{font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;}
+        </style>
+    <script type="module">
+        // Deferred Pyodide loader + improved result UI and saved-scenarios panel
+        const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js';
+        let pyodide = null;
+        let pyodideLoading = false;
+        let pyodideReady = false;
+
+        const pythonCode = `
+import json
+from math import floor
+
+ACCOUNT_COSTS = {
+    'Executive': 176000,
+    'CDAO': 83000,
+    'SMB': 5000
+}
+
+def calculate_optimal(scenario):
+    org = scenario['orgData']
+    usage = scenario['usageProfile']
+    budget = org.get('budget', 0) or 0
+
+    executive = min(org['departments'].get('executive', 0), floor(usage.get('heavyUsers',0) * 0.5))
+    cdao = min(org['departments'].get('dataAnalytics', 0), floor(usage.get('heavyUsers',0) * 0.4 + usage.get('mediumUsers',0) * 0.2))
+
+    remaining_budget = budget - (executive * ACCOUNT_COSTS['Executive']) - (cdao * ACCOUNT_COSTS['CDAO'])
+    smb = 0
+    if remaining_budget > 0:
+        smb = min(floor(remaining_budget / ACCOUNT_COSTS['SMB']), max(0, org.get('totalHeadcount',0) - executive - cdao))
+
+    total_cost = executive * ACCOUNT_COSTS['Executive'] + cdao * ACCOUNT_COSTS['CDAO'] + smb * ACCOUNT_COSTS['SMB']
+    total_users = max(1, executive + cdao + smb)
+
+    distribution = [
+        {'type': 'Executive Program Leadership Team Plus', 'quantity': executive, 'cost': executive * ACCOUNT_COSTS['Executive'], 'costPerUser': ACCOUNT_COSTS['Executive']},
+        {'type': 'Gartner CDAO', 'quantity': cdao, 'cost': cdao * ACCOUNT_COSTS['CDAO'], 'costPerUser': ACCOUNT_COSTS['CDAO']},
+        {'type': 'SMB Account', 'quantity': smb, 'cost': smb * ACCOUNT_COSTS['SMB'], 'costPerUser': ACCOUNT_COSTS['SMB']}
+    ]
+
+    summary = {
+        'totalCost': total_cost,
+        'totalUsers': executive + cdao + smb,
+        'averageCostPerUser': int(total_cost / total_users) if total_users else 0,
+        'budgetUtilization': round((total_cost / budget) * 100, 1) if budget else 0,
+        'uncoveredUsers': max(0, org.get('totalHeadcount',0) - (executive + cdao + smb))
+    }
+
+    negotiationTips = []
+    if summary['totalUsers'] >= 20:
+        negotiationTips.append('Request 10-15% volume discount for 20+ accounts')
+    else:
+        negotiationTips.append('Consider bundling to reach 20+ accounts for volume discount')
+    if executive >= 3:
+        negotiationTips.append('Negotiate additional conference passes for executive accounts')
+    if summary['totalCost'] > budget * 0.9:
+        negotiationTips.append('Negotiate multi-year (3-year) commitment for 5-10% discount')
+    negotiationTips.append('Ask for shared analyst inquiry hour pool across account types')
+
+    return {'distribution': distribution, 'summary': summary, 'negotiationTips': negotiationTips}
+
+def loads_from_inputs(inputs):
+    # Convert a JsProxy (from Pyodide) to a plain Python dict when possible
+    try:
+        inp = inputs.to_py()
+    except Exception:
+        inp = inputs
+
+    def _int(key, default):
+        try:
+            if isinstance(inp, dict):
+                val = inp.get(key, default)
+            else:
+                # fallback - attempt attribute access on the original inputs
+                val = getattr(inputs, key, default)
+            return int(val)
+        except Exception:
+            try:
+                return int(default)
+            except Exception:
+                return default
+
+    name = inp.get('name', 'New Scenario') if isinstance(inp, dict) else (getattr(inputs, 'name', 'New Scenario') if hasattr(inputs, 'name') else 'New Scenario')
+
+    scenario = {
+        'id': int(__import__('time').time() * 1000),
+        'name': name,
+        'date': __import__('datetime').datetime.utcnow().isoformat(),
+        'orgData': {
+            'totalHeadcount': _int('totalHeadcount', 100),
+            'budget': _int('budget', 500000),
+            'departments': {
+                'executive': _int('executive', 5),
+                'dataAnalytics': _int('dataAnalytics', 15),
+                'itManagement': _int('itManagement', 20),
+                'operations': _int('operations', 30),
+                'general': _int('general', 30)
+            }
+        },
+        'usageProfile': {
+            'heavyUsers': _int('heavyUsers', 10),
+            'mediumUsers': _int('mediumUsers', 30),
+            'lightUsers': _int('lightUsers', 60),
+            'conferenceAttendees': _int('conferenceAttendees', 15)
+        },
+        'priorities': {}
+    }
+    return scenario
+`;
+
+        async function loadPyodideAndPackagesOnce(){
+            if (pyodideReady) return pyodide;
+            if (pyodideLoading) {
+                // wait until ready
+                return new Promise((resolve, reject) => {
+                    const check = () => {
+                        if (pyodideReady) resolve(pyodide);
+                        else setTimeout(check, 100);
+                    };
+                    check();
+                });
+            }
+            pyodideLoading = true;
+            const script = document.createElement('script');
+            script.src = PYODIDE_CDN;
+            document.head.appendChild(script);
+            await new Promise((res, rej) => { script.onload = res; script.onerror = rej; });
+            pyodide = await globalThis.loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/' });
+            // load the python helper code into pyodide
+            await pyodide.runPythonAsync(pythonCode);
+            pyodideReady = true;
+            pyodideLoading = false;
+            return pyodide;
+        }
+
+        function readInputs(){
+            return {
+                totalHeadcount: Number(document.getElementById('py_totalHeadcount').value || 0),
+                budget: Number(document.getElementById('py_budget').value || 0),
+                executive: Number(document.getElementById('py_dept_executive').value || 0),
+                dataAnalytics: Number(document.getElementById('py_dept_dataAnalytics').value || 0),
+                itManagement: Number(document.getElementById('py_dept_itManagement').value || 0),
+                operations: Number(document.getElementById('py_dept_operations').value || 0),
+                general: Number(document.getElementById('py_dept_general').value || 0),
+                heavyUsers: Number(document.getElementById('py_heavyUsers').value || 0),
+                mediumUsers: Number(document.getElementById('py_mediumUsers').value || 0),
+                lightUsers: Number(document.getElementById('py_lightUsers').value || 0),
+                conferenceAttendees: Number(document.getElementById('py_conferenceAttendees').value || 0)
+            };
+        }
+
+        function buildResultHTML(obj){
+            // obj expected to have {distribution: [...], summary: {...}, negotiationTips: [...]}
+            const s = obj.summary || {};
+            const dist = obj.distribution || [];
+
+            const fmt = (n)=> new Intl.NumberFormat().format(n);
+            const fmtCurrency = (n)=> '$' + new Intl.NumberFormat().format(n);
+
+            let html = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                <div style="flex:1;min-width:180px;background:linear-gradient(90deg,#f0f9ff,#e6f6ff);padding:12px;border-radius:8px;border:1px solid var(--border);">
+                    <div class="metric-value">${fmtCurrency(s.totalCost || 0)}</div>
+                    <div class="metric-label">Total Cost</div>
+                </div>
+                <div style="flex:1;min-width:160px;background:linear-gradient(90deg,#fff7ed,#fff4e6);padding:12px;border-radius:8px;border:1px solid var(--border);">
+                    <div class="metric-value">${fmt(s.totalUsers || 0)}</div>
+                    <div class="metric-label">Total Users Covered</div>
+                </div>
+                <div style="flex:1;min-width:160px;background:linear-gradient(90deg,#f7fff0,#f3ffe6);padding:12px;border-radius:8px;border:1px solid var(--border);">
+                    <div class="metric-value">${fmtCurrency(s.averageCostPerUser || 0)}</div>
+                    <div class="metric-label">Avg Cost / User</div>
+                </div>
+                <div style="flex:1;min-width:160px;background:linear-gradient(90deg,#f7f7ff,#eef0ff);padding:12px;border-radius:8px;border:1px solid var(--border);">
+                    <div class="metric-value">${(s.budgetUtilization||0)}%</div>
+                    <div class="metric-label">Budget Utilized</div>
+                </div>
+            </div>`;
+
+            html += `<div style="overflow:auto;border-radius:8px;border:1px solid var(--border);background:var(--card)">
+                <table style="width:100%;border-collapse:collapse;min-width:640px;">
+                    <thead style="background:linear-gradient(90deg,#fafafa,#f2f2f2);text-align:left;">
+                        <tr>
+                            <th style="padding:10px;border-bottom:1px solid var(--border)">Account Type</th>
+                            <th style="padding:10px;border-bottom:1px solid var(--border);width:100px">Quantity</th>
+                            <th style="padding:10px;border-bottom:1px solid var(--border);width:120px">% of Total</th>
+                            <th style="padding:10px;border-bottom:1px solid var(--border);width:160px">Cost per User</th>
+                            <th style="padding:10px;border-bottom:1px solid var(--border);width:160px">Total Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            const totalUsers = s.totalUsers || 0;
+            dist.forEach(row => {
+                const pct = totalUsers ? ((row.quantity / totalUsers) * 100).toFixed(1) : '0.0';
+                html += `<tr>
+                    <td style="padding:8px;border-bottom:1px solid var(--border)">${row.type}</td>
+                    <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${fmt(row.quantity)}</td>
+                    <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${pct}%</td>
+                    <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${fmtCurrency(row.costPerUser)}</td>
+                    <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${fmtCurrency(row.cost)}</td>
+                </tr>`;
+            });
+
+            html += `</tbody></table></div>`;
+
+            if (s.uncoveredUsers && s.uncoveredUsers > 0){
+                html += `<div style="margin-top:12px;padding:12px;border-radius:8px;background:#fff4f4;border:1px solid #ffd6d6;color:#611a15">Coverage Gap: ${s.uncoveredUsers} users not covered by selected accounts.</div>`;
+            }
+
+            if (obj.negotiationTips && obj.negotiationTips.length){
+                html += `<div style="margin-top:12px;padding:12px;border-radius:8px;background:linear-gradient(90deg,#f8fafc,#f0f7ff);border:1px solid var(--border);">
+                    <strong>Negotiation Tips</strong>
+                    <ul style="margin:8px 0 0 18px;">${obj.negotiationTips.map(t=>`<li>${t}</li>`).join('')}</ul>
+                </div>`;
+            }
+
+            return html;
+        }
+
+        function renderResult(obj){
+            const container = document.getElementById('pyResultsContent');
+            container.innerHTML = buildResultHTML(obj);
+            document.getElementById('pyResults').style.display = 'block';
+        }
+
+        // Saved scenarios UI
+        function refreshSavedScenarios(){
+            const key = 'py_gartner_scenarios';
+            const list = JSON.parse(localStorage.getItem(key) || '[]');
+            const panelId = 'savedScenariosPanel';
+            let panel = document.getElementById(panelId);
+            if (!panel){
+                // create panel below optimizer card
+                const optCard = document.querySelector('#optimizer .card');
+                if (!optCard) return;
+                panel = document.createElement('div');
+                panel.id = panelId;
+                panel.className = 'card';
+                panel.style.marginTop = '8px';
+                optCard.parentNode.insertBefore(panel, optCard.nextSibling);
+            }
+            if (list.length === 0){
+                panel.innerHTML = '<h4>Saved Scenarios</h4><p class="text-muted">No saved scenarios</p>';
+                return;
+            }
+            let html = '<h4>Saved Scenarios</h4><div style="display:flex;flex-direction:column;gap:8px;">';
+            list.forEach((item, idx) => {
+                const name = (item.scenario && item.scenario.name) || `Scenario ${idx+1}`;
+                const savedAt = (item.scenario && item.scenario.date) ? new Date(item.scenario.date).toLocaleString() : '';
+                html += `<div style="display:flex;justify-content:space-between;align-items:center;background:#f8fafc;padding:8px;border-radius:6px;border:1px solid var(--border);">
+                    <div style="flex:1;">
+                        <div style="font-weight:600">${name}</div>
+                        <div style="font-size:12px;color:var(--text-muted)">${savedAt}</div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-left:12px;">
+                        <button class="btn" data-idx="${idx}">Load</button>
+                        <button class="btn btn-secondary" data-idx="${idx}">Delete</button>
+                    </div>
+                </div>`;
+            });
+            html += '</div>';
+            panel.innerHTML = html;
+
+            // attach event listeners for the generated buttons
+            panel.querySelectorAll('button.btn').forEach(b=>{
+                b.addEventListener('click', ()=>{
+                    const i = Number(b.getAttribute('data-idx'));
+                    loadSavedScenario(i);
+                });
+            });
+            panel.querySelectorAll('button.btn.btn-secondary').forEach(b=>{
+                b.addEventListener('click', ()=>{
+                    const i = Number(b.getAttribute('data-idx'));
+                    deleteSavedScenario(i);
+                });
+            });
+        }
+
+        // Expose load/delete to global
+        window.loadSavedScenario = function(idx){
+            const key = 'py_gartner_scenarios';
+            const list = JSON.parse(localStorage.getItem(key) || '[]');
+            const item = list[idx];
+            if (!item) return alert('Scenario not found');
+            const scenario = item.scenario || {};
+            // populate inputs
+            try{
+                const org = scenario.orgData || {};
+                const deps = org.departments || {};
+                const usage = scenario.usageProfile || {};
+                document.getElementById('py_totalHeadcount').value = org.totalHeadcount || 100;
+                document.getElementById('py_budget').value = org.budget || 500000;
+                document.getElementById('py_dept_executive').value = deps.executive || 0;
+                document.getElementById('py_dept_dataAnalytics').value = deps.dataAnalytics || 0;
+                document.getElementById('py_dept_itManagement').value = deps.itManagement || 0;
+                document.getElementById('py_dept_operations').value = deps.operations || 0;
+                document.getElementById('py_dept_general').value = deps.general || 0;
+                document.getElementById('py_heavyUsers').value = usage.heavyUsers || 0;
+                document.getElementById('py_mediumUsers').value = usage.mediumUsers || 0;
+                document.getElementById('py_lightUsers').value = usage.lightUsers || 0;
+                document.getElementById('py_conferenceAttendees').value = usage.conferenceAttendees || 0;
+                if (item.recommendation) renderResult(item.recommendation);
+            }catch(e){ console.error(e); }
+        };
+
+        window.deleteSavedScenario = function(idx){
+            const key = 'py_gartner_scenarios';
+            const list = JSON.parse(localStorage.getItem(key) || '[]');
+            if (!list[idx]) return;
+            list.splice(idx,1);
+            localStorage.setItem(key, JSON.stringify(list));
+            refreshSavedScenarios();
+        };
+
+        // Wire up buttons and deferred loading
+        (function wireButtons(){
+            const calc = document.getElementById('pyCalculate');
+            const saveBtn = document.getElementById('pySave');
+            const exportBtn = document.getElementById('pyExport');
+
+            if (!calc) return;
+
+            calc.addEventListener('click', async ()=>{
+                calc.disabled = true;
+                const oldText = calc.textContent;
+                calc.textContent = 'Loading Python...';
+                try{
+                    await loadPyodideAndPackagesOnce();
+                    const inputs = readInputs();
+                    pyodide.globals.set('js_inputs', inputs);
+                    await pyodide.runPythonAsync('scenario = loads_from_inputs(js_inputs)');
+                    await pyodide.runPythonAsync('result = calculate_optimal(scenario)');
+                    const result = pyodide.runPython('json.dumps(result)');
+                    const parsed = JSON.parse(result);
+                    renderResult(parsed);
+                }catch(err){
+                    document.getElementById('pyResultsContent').innerText = 'Error: ' + String(err);
+                    document.getElementById('pyResults').style.display = 'block';
+                }finally{
+                    try{ pyodide.globals.delete('js_inputs'); }catch(e){}
+                    calc.disabled = false;
+                    calc.textContent = oldText;
+                    refreshSavedScenarios();
+                }
+            });
+
+            saveBtn?.addEventListener('click', async ()=>{
+                saveBtn.disabled = true;
+                const oldText = saveBtn.textContent;
+                saveBtn.textContent = 'Saving...';
+                try{
+                    await loadPyodideAndPackagesOnce();
+                    const inputs = readInputs();
+                    pyodide.globals.set('js_inputs', inputs);
+                    await pyodide.runPythonAsync('scenario = loads_from_inputs(js_inputs)');
+                    await pyodide.runPythonAsync('result = calculate_optimal(scenario)');
+                    const result = pyodide.runPython('json.dumps({"scenario": scenario, "recommendation": result})');
+                    const parsed = JSON.parse(result);
+                    const key = 'py_gartner_scenarios';
+                    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+                    existing.push(parsed);
+                    localStorage.setItem(key, JSON.stringify(existing));
+                    alert('Scenario saved to browser storage');
+                    refreshSavedScenarios();
+                }catch(err){
+                    alert('Save failed: ' + err);
+                }finally{
+                    try{ pyodide.globals.delete('js_inputs'); }catch(e){}
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = oldText;
+                }
+            });
+
+            exportBtn?.addEventListener('click', ()=>{
+                const key = 'py_gartner_scenarios';
+                const existing = localStorage.getItem(key) || '[]';
+                const blob = new Blob([existing], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'py_gartner_scenarios_' + new Date().toISOString().split('T')[0] + '.json';
+                a.click();
+            });
+
+            // initial refresh
+            refreshSavedScenarios();
+        })();
+    </script>
+
     <style>
         * {
             margin: 0;
@@ -384,19 +793,19 @@
     <div class="container">
         <!-- Navigation Tabs -->
         <div class="tabs">
-            <button class="tab active" onclick="showTab('overview')">
+            <button class="tab active" onclick="showTab(event, 'overview')">
                 <i class="fas fa-tachometer-alt"></i> Overview Dashboard
             </button>
-            <button class="tab" onclick="showTab('insights')">
+            <button class="tab" onclick="showTab(event, 'insights')">
                 <i class="fas fa-lightbulb"></i> Insights Engine
             </button>
 <!--            <button class="tab" onclick="showTab('ai-discovery')">
                 <i class="fas fa-robot"></i> AI Discovery Bot
             </button>   -->
-            <button class="tab" onclick="showTab('optimizer')">
+            <button class="tab" onclick="showTab(event, 'optimizer')">
                 <i class="fas fa-cogs"></i> Decision Optimizer
             </button>
-            <button class="tab" onclick="showTab('reports')">
+            <button class="tab" onclick="showTab(event, 'reports')">
                 <i class="fas fa-file-alt"></i> Report Generator
             </button>
         </div>
@@ -962,14 +1371,14 @@
                         <div class="alert alert-info">
                             <strong>💡 OPTIMIZATION POTENTIAL: $420K Annual Savings</strong><br>
                             • 27% of seats show low utilization (<2 downloads/month)<br>
-                            • Right-size to 620 active seats from current 847<br>
+                            • Right-size to 24 active seats from current 38<br>
                             • Maintain service quality while reducing costs
                         </div>
                         
                         <div style="margin-top: 20px;">
                             <h5>Recommended Actions:</h5>
                             <ul style="margin: 10px 0; padding-left: 20px;">
-                                <li><strong>Immediate:</strong> Reduce seat count by 227 seats</li>
+                                <li><strong>Immediate:</strong> Reduce seat count by 14 seats</li>
                                 <li><strong>Contract:</strong> Negotiate 2-year deal for better pricing</li>
                                 <li><strong>Focus:</strong> Concentrate spend on high-value content areas</li>
                             </ul>
@@ -1021,48 +1430,48 @@
                     <tbody>
                         <tr style="background: rgba(5, 150, 105, 0.05);">
                             <td><strong>Strategy & Planning</strong></td>
-                            <td>45</td>
-                            <td>42</td>
-                            <td><span class="badge badge-success">93%</span></td>
+                            <td>8</td>
+                            <td>7</td>
+                            <td><span class="badge badge-success">88%</span></td>
                             <td>$1,200,000</td>
                             <td>$147</td>
                             <td><span class="badge badge-success">Optimize - High Value</span></td>
                         </tr>
                         <tr style="background: rgba(5, 150, 105, 0.05);">
                             <td><strong>IT Leadership</strong></td>
-                            <td>67</td>
-                            <td>58</td>
-                            <td><span class="badge badge-success">87%</span></td>
+                            <td>7</td>
+                            <td>6</td>
+                            <td><span class="badge badge-success">86%</span></td>
                             <td>$980,000</td>
                             <td>$163</td>
                             <td><span class="badge badge-success">Maintain - Core User</span></td>
                         </tr>
                         <tr style="background: rgba(217, 119, 6, 0.05);">
                             <td>Business Development</td>
-                            <td>89</td>
-                            <td>52</td>
-                            <td><span class="badge badge-warning">58%</span></td>
+                            <td>7</td>
+                            <td>4</td>
+                            <td><span class="badge badge-warning">56%</span></td>
                             <td>$420,000</td>
                             <td>$284</td>
-                            <td><span class="badge badge-warning">Right-size to 55 seats</span></td>
+                            <td><span class="badge badge-warning">Right-size to 4 seats</span></td>
                         </tr>
                         <tr style="background: rgba(217, 119, 6, 0.05);">
                             <td>Operations</td>
-                            <td>156</td>
-                            <td>87</td>
+                            <td>9</td>
+                            <td>5</td>
                             <td><span class="badge badge-warning">56%</span></td>
                             <td>$380,000</td>
                             <td>$312</td>
-                            <td><span class="badge badge-warning">Reduce to 95 seats</span></td>
+                            <td><span class="badge badge-warning">Reduce to 5 seats</span></td>
                         </tr>
                         <tr style="background: rgba(220, 38, 38, 0.05);">
                             <td>Support Functions</td>
-                            <td>490</td>
-                            <td>143</td>
+                            <td>7</td>
+                            <td>2</td>
                             <td><span class="badge badge-danger">29%</span></td>
                             <td>$180,000</td>
                             <td>$543</td>
-                            <td><span class="badge badge-danger">Major reduction to 150 seats</span></td>
+                            <td><span class="badge badge-danger">Major reduction to 2 seats</span></td>
                         </tr>
                     </tbody>
                 </table>
@@ -1078,9 +1487,9 @@
                             <strong>Recommended Approach: Tiered Access Model</strong>
                         </div>
                         <ul style="margin: 15px 0; padding-left: 20px;">
-                            <li><strong>Tier 1 (Premium):</strong> 145 seats for Strategy & IT Leadership</li>
-                            <li><strong>Tier 2 (Standard):</strong> 285 seats for active business users</li>
-                            <li><strong>Tier 3 (Basic):</strong> 190 seats for occasional users</li>
+                            <li><strong>Tier 1 (Premium):</strong> 13 seats for Strategy & IT Leadership</li>
+                            <li><strong>Tier 2 (Standard):</strong> 4 seats for active business users</li>
+                            <li><strong>Tier 3 (Basic):</strong> 7 seats for occasional users</li>
                         </ul>
                         <p><strong>Expected Savings:</strong> $420,000 annually vs current structure</p>
                     </div>
@@ -1124,8 +1533,8 @@
                     <div class="alert alert-info">
                         <h5>Hybrid Approach</h5>
                         <strong>Strategic Option:</strong><br>
-                        • Gartner for IT/Strategy (400 seats)<br>
-                        • Forrester for Marketing/CX (200 seats)<br>
+                        • Gartner for IT/Strategy (20 seats)<br>
+                        • Forrester for Marketing/CX (20 seats)<br>
                         • 12% overall cost reduction<br>
                         <strong>Complexity:</strong> Dual vendor management<br>
                         <strong>Value Score: 8.1/10</strong>
@@ -1148,7 +1557,7 @@
                     <h4 style="color: #1e40af; margin: 20px 0 15px 0;">Management Recommendation:</h4>
                     <div class="alert alert-success" style="margin: 0;">
                         <strong>PROCEED with optimized Gartner renewal</strong><br>
-                        • Restructure to tiered access model (620 total seats)<br>
+                        • Restructure to tiered access model (24 total seats)<br>
                         • Negotiate 2-year contract with performance guarantees<br>
                         • Achieve $707K total savings over contract period<br>
                         • Maintain service quality for critical business functions
@@ -1218,16 +1627,16 @@
                 <div class="grid grid-2">
                     <div>
                         <div class="form-group">
-                            <label class="form-label">Budget Constraint: <span id="budgetConstraintValue">$5,000,000</span></label>
-                            <input type="range" class="form-control" id="budgetConstraint" min="0" max="10000000" value="5000000" oninput="updateScenarios()">
+                            <label class="form-label">Budget Constraint: <span id="budgetConstraintValue">$3,000,000</span></label>
+                            <input type="range" class="form-control" id="budgetConstraint" min="0" max="5000000" value="3000000" oninput="updateScenarios()">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Seat Allocation Strategy: <span id="seatStrategyValue">500</span> seats</label>
-                            <input type="range" class="form-control" id="seatStrategy" min="0" max="1000" value="500" oninput="updateScenarios()">
+                            <label class="form-label">Seat Allocation Strategy: <span id="seatStrategyValue">40</span> seats</label>
+                            <input type="range" class="form-control" id="seatStrategy" min="0" max="100" value="40" oninput="updateScenarios()">
                         </div>
                         <div class="form-group">
                             <label class="form-label">Contract Term: <span id="contractTermValue">2</span> years</label>
-                            <input type="range" class="form-control" id="contractTerm" min="0" max="5" value="2" oninput="updateScenarios()">
+                            <input type="range" class="form-control" id="contractTerm" min="0" max="5" value="3" oninput="updateScenarios()">
                         </div>
                     </div>
                     <div id="scenarioResults">
@@ -1244,6 +1653,76 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Advanced Python Optimizer (Pyodide) -->
+            <div class="card">
+                <h3>Advanced Python Optimizer</h3>
+                <p style="color: var(--text-muted);">This runs a browser-side Python translation of the Gartner optimizer using Pyodide.</p>
+                <div class="grid grid-2">
+                    <div>
+                        <div class="form-group">
+                            <label class="form-label">Total Headcount</label>
+                            <input type="number" id="py_totalHeadcount" class="form-control" value="100">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Annual Budget ($)</label>
+                            <input type="number" id="py_budget" class="form-control" value="500000">
+                        </div>
+
+                        <h4 style="margin-top:10px;">Departments</h4>
+                        <div class="form-group">
+                            <label class="form-label">Executive</label>
+                            <input type="number" id="py_dept_executive" class="form-control" value="5">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Data & Analytics</label>
+                            <input type="number" id="py_dept_dataAnalytics" class="form-control" value="15">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">IT Management</label>
+                            <input type="number" id="py_dept_itManagement" class="form-control" value="20">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Operations</label>
+                            <input type="number" id="py_dept_operations" class="form-control" value="30">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">General</label>
+                            <input type="number" id="py_dept_general" class="form-control" value="30">
+                        </div>
+                    </div>
+                    <div>
+                        <h4>Usage Profile</h4>
+                        <div class="form-group">
+                            <label class="form-label">Heavy Users</label>
+                            <input type="number" id="py_heavyUsers" class="form-control" value="10">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Medium Users</label>
+                            <input type="number" id="py_mediumUsers" class="form-control" value="30">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Light Users</label>
+                            <input type="number" id="py_lightUsers" class="form-control" value="60">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Conference Attendees</label>
+                            <input type="number" id="py_conferenceAttendees" class="form-control" value="15">
+                        </div>
+
+                        <div style="margin-top:10px; display:flex; gap:8px;">
+                            <button class="btn" id="pyCalculate">Calculate Optimal Distribution (Python)</button>
+                            <button class="btn btn-success" id="pySave">Save Scenario</button>
+                            <button class="btn btn-secondary" id="pyExport">Export Scenarios</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="pyResults" style="margin-top:16px; display:none;">
+                    <h4>Results</h4>
+                    <div id="pyResultsContent"></div>
                 </div>
             </div>
 
@@ -1452,7 +1931,7 @@
 
     <script>
         // Tab Navigation
-        function showTab(tabName) {
+        function showTab(evt, tabName) {
             // Hide all tab contents
             const contents = document.querySelectorAll('.tab-content');
             contents.forEach(content => content.classList.remove('active'));
@@ -1463,9 +1942,8 @@
 
             // Show selected tab content
             document.getElementById(tabName).classList.add('active');
-
-            // Add active class to clicked tab
-            event.target.classList.add('active');
+            // Add active class to clicked tab (use currentTarget)
+            try { evt.currentTarget.classList.add('active'); } catch(e) {}
         }
 
         // AI Chat Functionality
@@ -2018,5 +2496,6 @@
   aiClear.addEventListener('click', ()=>{ localStorage.removeItem(STORE_KEY); renderHistory(); });
 })();
 </script>
+
 </body>
 </html>

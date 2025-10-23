@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
     "scripts": {
-    "build": "echo \"Nothing to build\"",
-    "vercel-build": "npm run build"
-  },
+      "build": "npm build",
+      "start": "npm start"
+    },
   "engines": {
     "node": ">=18"
   }
